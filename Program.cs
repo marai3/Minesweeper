@@ -1,16 +1,26 @@
 ﻿using System.Diagnostics;
 using Silk.NET.SDL;
+using System.IO;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace TheAdventure;
 
 public static class Program
 {
+    static int _winStreak = 0;
+    static string _savePath = "streak.txt";
     public static void Main()
     {
         var sdl = new Sdl(new SdlContext());
-
         UInt64 framesRenderedCounter = 0;
-        var timer = new Stopwatch();
+       if (File.Exists(_savePath)) int.TryParse(File.ReadAllText(_savePath), out _winStreak);
+        var table = new Table(18, 20, 35);
+        int cellSize = 40;
+        int offsetY = 60;      
+        bool gameWon = false;
+        bool gameOver = false;
+
 
         ReadOnlySpan<byte> keyboardState;
         unsafe
@@ -48,7 +58,7 @@ public static class Program
                 throw new Exception("Failed to create window.");
             }
         }
-
+ 
         IntPtr renderer;
         unsafe
         {
@@ -66,11 +76,55 @@ public static class Program
 
             throw new Exception("Failed to create renderer.");
         }
+        var textures = new Dictionary<string, IntPtr>();
+        unsafe IntPtr LoadTexture(string path)
+        {
+            try
+            {
+                using (var fStream = new FileStream(path, FileMode.Open))
+                {
+                    var image = Image.Load<Rgba32>(fStream);
+                    var width = image.Width;
+                    var height = image.Height;
+                    var imageRAWData = new byte[width * height * 4];
+                    image.CopyPixelDataTo(imageRAWData.AsSpan());
+                    fixed (byte* data = imageRAWData)
+                    {
+                        var imageSurface = sdl.CreateRGBSurfaceWithFormatFrom(
+                            data, 
+                            width, 
+                            height, 
+                            8, 
+                            width * 4, 
+                            (uint)PixelFormatEnum.Rgba32);
+                            
+                        if (imageSurface == null) 
+                        {
+                            Console.WriteLine($"[Avertisment] Nu s-a putut crea suprafata pentru {path}");
+                            return IntPtr.Zero;
+                        }
+                        var texture = sdl.CreateTextureFromSurface((Renderer*)renderer, imageSurface);
+                        sdl.FreeSurface(imageSurface);
+                        return (IntPtr)texture;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                Console.WriteLine($"Nu am gasit fisierul: {path}");
+                return IntPtr.Zero;
+            }
+        }
+        textures["hidden"] = LoadTexture("Assets/hidden.bmp");
+        textures["revealed"] = LoadTexture("Assets/revealed.bmp");
+        textures["bomb"] = LoadTexture("Assets/bomb.bmp");
+        textures["bomb_explode"] = LoadTexture("Assets/bomb_explode.bmp");
+        textures["flag"] = LoadTexture("Assets/flag.bmp");
+        textures["resume"] = LoadTexture("Assets/resume.bmp");
+        textures["win"] = LoadTexture("Assets/win.bmp");
 
-        var startX = 100;
-        var startY = 100;
-        var endX = 200;
-        var endY = 200;
+        for (int i = 1; i <= 8; i++)
+            textures[i.ToString()] = LoadTexture($"Assets/{i}.bmp");
 
         bool quit = false;
         while (!quit)
@@ -151,30 +205,64 @@ public static class Program
 
                     case (uint)EventType.Mousemotion:
                     {
-                        if (keyboardState[(byte)KeyCode.LShift] > 0)
-                        {
-                            endX = ev.Motion.X;
-                            endY = ev.Motion.Y;
-                        }
-                        else
-                        {
-                            startX = ev.Motion.X;
-                            startY = ev.Motion.Y;
-                        }
-
+                        
                         break;
                     }
 
                     case (uint)EventType.Fingerdown:
                     {
-                        mouseButtonStates[(byte)MouseButton.Primary] = 1;
                         break;
                     }
                     case (uint)EventType.Mousebuttondown:
                     {
-                        mouseButtonStates[ev.Button.Button] = 1;
+                    if (ev.Type == (uint)EventType.Mousebuttondown )
+                    {
+                        int mx = ev.Button.X;
+                        int my = ev.Button.Y;
+                        if (mx >= 300 && mx <= 500 && my >= 10 && my <= 50)
+                        {
+                            table = new Table(18, 20, 35); 
+                            gameOver = false;
+                            gameWon = false;
+                            continue; 
+                        }
+                    }
+                    if(!gameOver && !gameWon)
+                    {
+                        int c = ev.Button.X / cellSize;
+                        int r = (ev.Button.Y - offsetY) / cellSize;
+
+                        if (c >= 0 && c < table.Columns && r >= 0 && r < table.Rows)
+                        {
+                            if (ev.Button.Button == (byte)MouseButton.Primary)
+                            {
+                                if (table.Cells[c, r].Mine) 
+                                { 
+                                    gameOver = true; 
+                                    _winStreak = 0;
+                                    File.WriteAllText(_savePath, "0"); 
+                                }
+                                else 
+                                {
+                                    table.FloodReveal(c, r);
+                                    if (table.CheckWinCondition()) 
+                                    { 
+                                        gameWon = true; 
+                                        _winStreak++;
+                                        File.WriteAllText(_savePath, _winStreak.ToString());
+                                    }
+                                }
+                            }
+                            else if (ev.Button.Button == (byte)MouseButton.Secondary)
+                            {
+                                table.Cells[c, r].Flag = !table.Cells[c, r].Flag;
+                            }
+                        }
+                    }
                         break;
                     }
+                  
+                        
 
                     case (uint)EventType.Fingerup:
                     {
@@ -206,28 +294,90 @@ public static class Program
                 }
             }
 
-            var elapsed = timer.Elapsed;
-            timer.Restart();
 
             // game.render(renderer, RenderEvent{ elapsed, framesRenderedCounter++ });
             unsafe
             {
-                var r = (Renderer *)renderer;
-
-                sdl.SetRenderDrawColor(r, 255, 255, 255, 255);
+                var r = (Renderer*)renderer;
+                sdl.SetRenderDrawColor(r, 0, 0, 0, 255);
                 sdl.RenderClear(r);
+                for (int x = 0; x < table.Columns; x++)
+                {
+                    for (int y = 0; y < table.Rows; y++)
+                    {
+                        var cell = table.Cells[x, y];
+                        string texKey = "hidden"; 
 
-                sdl.SetRenderDrawColor(r, 255, 0, 0, 255);
-                sdl.RenderDrawLine(r, startX, startY, endX, endY);
+                        if (cell.Revealed)
+                        {
+                            if (cell.Mine) 
+                                texKey = "bomb_explode"; 
+                            else if (cell.NrMines > 0) 
+                                texKey = cell.NrMines.ToString(); 
+                            else 
+                                texKey = "revealed"; 
+                        }
+                        else if (cell.Flag)
+                        {
+                            texKey = "flag";
+                        }
+                        else if (gameOver && cell.Mine)
+                        {
+                            texKey = "bomb";
+                        }
+                        var rect = new Silk.NET.Maths.Rectangle<int>(x * cellSize,y * cellSize + offsetY, cellSize, cellSize);
+                        if (textures.ContainsKey(texKey) && textures[texKey] != IntPtr.Zero)
+                        {
+                            sdl.RenderCopy(r, (Texture*)textures[texKey], null, ref rect);
+                        }
+                    }
+                }
+                sdl.SetRenderDrawColor(r, 50, 50, 50, 255);
+                var bar = new Silk.NET.Maths.Rectangle<int>(0, 0, 800, offsetY);
+                sdl.RenderFillRect(r, ref bar);
+
+                if (textures.ContainsKey("resume") && textures["resume"] != IntPtr.Zero)
+                {
+                    var btn = new Silk.NET.Maths.Rectangle<int>(300, 10, 200, 40);
+                    sdl.RenderCopy(r, (Texture*)textures["resume"], null, ref btn);
+                }
+
+                if (gameWon)
+                {
+                    if (textures.ContainsKey("win") && textures["win"] != IntPtr.Zero)
+                    {
+                        var winBox = new Silk.NET.Maths.Rectangle<int>(200, 350, 400, 100);
+                        sdl.RenderCopy(r, (Texture*)textures["win"], null, ref winBox);
+                    }
+                }
+                string streakStr = _winStreak.ToString();
+                for (int i = 0; i < streakStr.Length; i++)
+                {
+                    string digit = streakStr[i].ToString();
+                    var streakRect = new Silk.NET.Maths.Rectangle<int>(750 + (i * 15), 15, 15, 25);
+                    if (textures.ContainsKey(digit))
+                    {
+                        sdl.RenderCopy(r, (Texture*)textures[digit], null, ref streakRect);
+                    }
+                }
 
                 sdl.RenderPresent(r);
+                System.Threading.Thread.Sleep(13);
             }
-
             ++framesRenderedCounter;
+            
         }
 
         unsafe
-        {
+        {   
+            foreach (var tex in textures.Values)
+            {
+                if (tex != IntPtr.Zero) 
+                {
+                    sdl.DestroyTexture((Texture*)tex);
+                }
+            }
+            sdl.DestroyRenderer((Renderer*)renderer);
             sdl.DestroyWindow((Window*)window);
         }
 
