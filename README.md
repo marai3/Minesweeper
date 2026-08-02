@@ -2,7 +2,7 @@
 
 Joc de Minesweeper (Detectorul de mine) în C#, construit peste un schelet SDL2 (Silk.NET). Grilă de 20x18 celule, cu 35 de mine plasate aleator, flag-uire cu click dreapta, dezvăluire în lanț (flood fill) pentru celulele fără mine adiacente, și o serie de câștiguri consecutive (win streak) salvată local între sesiuni.
 
-![Gameplay](gameplay.png)
+![Gameplay](Gameplay.png)
 
 ---
 
